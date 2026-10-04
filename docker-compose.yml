@@ -1,0 +1,269 @@
+name: paperless
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+    compress: "true"
+
+services:
+  paperless:
+    image: ${PAPERLESS_IMAGE:-ghcr.io/paperless-ngx/paperless-ngx}:${PAPERLESS_IMAGE_TAG:-3.2.1}
+    container_name: paperless
+    restart: unless-stopped
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+      gotenberg:
+        condition: service_healthy
+      tika:
+        condition: service_healthy
+    environment:
+      TZ: "${TZ:-Europe/Athens}"
+      # Server
+      PAPERLESS_URL: "https://${DOMAIN:?DOMAIN is required}"
+      PAPERLESS_SECRET_KEY_FILE: /run/secrets/paperless-secret-key
+      PAPERLESS_TIME_ZONE: "${TZ:-Europe/Athens}"
+      # Database
+      PAPERLESS_DBENGINE: postgresql
+      PAPERLESS_DBHOST: postgres
+      PAPERLESS_DBNAME: "${POSTGRES_DB:-paperless}"
+      PAPERLESS_DBUSER: "${POSTGRES_USER:-paperless}"
+      PAPERLESS_DBPASS_FILE: /run/secrets/postgres_password
+      # Broker
+      PAPERLESS_REDIS: redis://broker:6379
+      # Tika & Gotenberg
+      PAPERLESS_TIKA_ENABLED: "1"
+      PAPERLESS_TIKA_ENDPOINT: http://tika:9998
+      PAPERLESS_TIKA_GOTENBERG_ENDPOINT: http://gotenberg:3000
+      # OCR
+      PAPERLESS_OCR_LANGUAGE: "${PAPERLESS_OCR_LANGUAGE:-ell+eng}"
+      # Paperless sizes its workers from the HOST's CPU count, not the container
+      # limit. Set them explicitly or it starts far more than the limits can carry.
+      PAPERLESS_TASK_WORKERS: "${PAPERLESS_TASK_WORKERS:-1}"
+      PAPERLESS_THREADS_PER_WORKER: "${PAPERLESS_THREADS_PER_WORKER:-2}"
+    secrets:
+      - postgres-password
+      - paperless-secret-key
+    volumes:
+      - data:/usr/src/paperless/data
+      - media:/usr/src/paperless/media
+      - consume:/usr/src/paperless/consume
+      - export:/usr/src/paperless/export
+    networks:
+      - paperless
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+      start_interval: 5s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          # OCR (tesseract/ocrmypdf) is CPU- and memory-hungry; 512M gets OOM-killed
+          # on multi-page scans.
+          # noinspection ComposeUnknownValues
+          cpus: "${PAPERLESS_CPU_LIMIT:-2}"
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_MEMORY_LIMIT:-2G}"
+          # noinspection ComposeUnknownValues
+          pids: ${PAPERLESS_PIDS_LIMIT:-1024}
+        reservations:
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_MEMORY_RESERVATION:-512M}"
+    labels:
+      - "traefik.enable=true"
+      # Router (TLS comes from the websecure entrypoint's wildcard default)
+      - "traefik.http.routers.paperless.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.paperless.entrypoints=websecure"
+      - "traefik.http.routers.paperless.service=paperless"
+      - "traefik.http.routers.paperless.middlewares=paperless-ipallowlist,strict-path@file"
+      # Middlewares
+      - "traefik.http.middlewares.paperless-ipallowlist.ipallowlist.sourcerange=${IPV4_ALLOWLIST:-0.0.0.0/0},${IPV6_ALLOWLIST:-::/0}"
+      # Service
+      - "traefik.http.services.paperless.loadbalancer.server.port=8000"
+
+  postgres:
+    image: postgres:${POSTGRES_TAG:-18.6}
+    pull_policy: missing
+    container_name: paperless-postgres
+    restart: unless-stopped
+    stop_grace_period: 60s
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 128m
+    environment:
+      TZ: "${TZ:-Europe/Athens}"
+      POSTGRES_DB: "${POSTGRES_DB:-paperless}"
+      POSTGRES_USER: "${POSTGRES_USER:-paperless}"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres-password
+    secrets:
+      - postgres-password
+    volumes:
+      - pgdata:/var/lib/postgresql
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          # noinspection ComposeUnknownValues
+          cpus: "${PAPERLESS_POSTGRES_CPU_LIMIT:-1}"
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_POSTGRES_MEMORY_LIMIT:-512M}"
+          # noinspection ComposeUnknownValues
+          pids: ${PAPERLESS_POSTGRES_PIDS_LIMIT:-256}
+        reservations:
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_POSTGRES_MEMORY_RESERVATION:-256M}"
+
+  broker:
+    image: valkey/valkey:${VALKEY_TAG:-9-alpine}
+    pull_policy: missing
+    container_name: paperless-broker
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "${TZ:-Europe/Athens}"
+    volumes:
+      - brokerdata:/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+      start_interval: 5s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          # noinspection ComposeUnknownValues
+          cpus: "${PAPERLESS_BROKER_CPU_LIMIT:-0.5}"
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_BROKER_MEMORY_LIMIT:-128M}"
+          # noinspection ComposeUnknownValues
+          pids: ${PAPERLESS_BROKER_PIDS_LIMIT:-64}
+        reservations:
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_BROKER_MEMORY_RESERVATION:-64M}"
+
+  gotenberg:
+    image: gotenberg/gotenberg:${GOTENBERG_TAG:-8}
+    pull_policy: missing
+    container_name: paperless-gotenberg
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    command:
+      - "gotenberg"
+      - "--chromium-disable-javascript=true"
+      - "--chromium-allow-list=file:///tmp/.*"
+    environment:
+      TZ: "${TZ:-Europe/Athens}"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          # noinspection ComposeUnknownValues
+          cpus: "${PAPERLESS_GOTENBERG_CPU_LIMIT:-1}"
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_GOTENBERG_MEMORY_LIMIT:-1G}"
+          # Chromium spawns many processes and threads.
+          # noinspection ComposeUnknownValues
+          pids: ${PAPERLESS_GOTENBERG_PIDS_LIMIT:-512}
+        reservations:
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_GOTENBERG_MEMORY_RESERVATION:-256M}"
+
+  tika:
+    image: ${TIKA_IMAGE:-apache/tika}:${TIKA_IMAGE_TAG:-4.1.0-full}
+    pull_policy: missing
+    container_name: paperless-tika
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: "${TZ:-Europe/Athens}"
+      # Tika is Java: the default 25% heap is too little for large Office files.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=${PAPERLESS_TIKA_HEAP_PERCENT:-60}"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9998"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+      start_interval: 5s
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          # noinspection ComposeUnknownValues
+          cpus: "${PAPERLESS_TIKA_CPU_LIMIT:-1}"
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_TIKA_MEMORY_LIMIT:-1G}"
+          # noinspection ComposeUnknownValues
+          pids: ${PAPERLESS_TIKA_PIDS_LIMIT:-512}
+        reservations:
+          # noinspection ComposeUnknownValues
+          memory: "${PAPERLESS_TIKA_MEMORY_RESERVATION:-256M}"
+
+networks:
+  paperless:
+    name: paperless
+  backend:
+    name: paperless-backend
+    internal: true
+
+volumes:
+  data:
+    name: paperless-data
+  media:
+    name: paperless-media
+  consume:
+    name: paperless-consume
+  export:
+    name: paperless-export
+  pgdata:
+    name: paperless-pgdata
+  brokerdata:
+    name: paperless-brokerdata
+
+secrets:
+  postgres-password:
+    environment: POSTGRES_PASSWORD
+  paperless-secret-key:
+    environment: PAPERLESS_SECRET_KEY
