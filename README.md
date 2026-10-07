@@ -31,6 +31,9 @@ does not ship Greek OCR data, so `.env.example` uses `eng` and `.env.fork.exampl
 - `paperless` — the only network the web container exposes; Traefik routes to port `8000` on it.
 - `paperless-backend` — `internal: true`, no outbound access. Database, broker, Gotenberg and Tika live only here.
 
+Both networks are dual-stack (IPv4 + IPv6) with fixed subnets, set by `PAPERLESS_NETWORK_SUBNET_V4/_V6` and
+`PAPERLESS_BACKEND_NETWORK_SUBNET_V4/_V6`. Pick ranges that don't overlap any other Docker network on the host.
+
 ### Volumes
 
 | Volume                 | Mounted at                       |
@@ -110,6 +113,7 @@ docker compose up -d
 All settings live in `.env`; see [`.env.example`](.env.example) for the full list with defaults.
 
 - **Access control** — `IPV4_ALLOWLIST` / `IPV6_ALLOWLIST` restrict the web UI and API via a Traefik IP allowlist. Defaults allow everyone.
+- **Networks** — `PAPERLESS_NETWORK_SUBNET_V4/_V6` and `PAPERLESS_BACKEND_NETWORK_SUBNET_V4/_V6` set each network's subnets (defaults `10.100.0.0/24` + `fd00:100::/64` and `10.100.1.0/24` + `fd00:100:1::/64`). Docker can't change the subnet of an existing network: after changing them, run `docker compose down && docker compose up -d` (Traefik must be detached from `paperless` first, or the network can't be removed).
 - **OCR** — `PAPERLESS_OCR_LANGUAGE` is `eng` with the upstream image and `ell+eng` (Greek + English) with the fork image; see [Images](#images).
 - **Workers** — Paperless sizes its workers from the *host's* CPU count, not the container limit, so they are set explicitly. Keep `PAPERLESS_TASK_WORKERS × PAPERLESS_THREADS_PER_WORKER ≤ PAPERLESS_CPU_LIMIT`.
 - **Resource limits** — every service has CPU, memory, memory-reservation and PID limits (`PAPERLESS_*_CPU_LIMIT`, `*_MEMORY_LIMIT`, …). OCR is memory-hungry; don't drop the main container much below 2G.

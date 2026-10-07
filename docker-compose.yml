@@ -244,9 +244,19 @@ services:
 networks:
   paperless:
     name: paperless
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "${PAPERLESS_NETWORK_SUBNET_V4:-10.100.0.0/24}"
+        - subnet: "${PAPERLESS_NETWORK_SUBNET_V6:-fd00:100::/64}"
   backend:
     name: paperless-backend
     internal: true
+    enable_ipv6: true
+    ipam:
+      config:
+        - subnet: "${PAPERLESS_BACKEND_NETWORK_SUBNET_V4:-10.100.1.0/24}"
+        - subnet: "${PAPERLESS_BACKEND_NETWORK_SUBNET_V6:-fd00:100:1::/64}"
 
 volumes:
   data:
