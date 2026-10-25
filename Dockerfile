@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM ghcr.io/paperless-ngx/paperless-ngx:3.2.1
+FROM ghcr.io/paperless-ngx/paperless-ngx:3.3.4
 
 # Greek OCR data, baked in so containers don't apt-install it on every start.
 # Cache mounts keep apt's downloads out of the image and speed up rebuilds.
